@@ -136,16 +136,25 @@ def build_outlet_features(monthly_agg):
 
     feats["credit_limit_hit_rate"] = grouped.apply(credit_hit_rate)
 
-    # Stockout flag: outlet had at least one zero-volume month mid-series
+    # Stockout flag: outlet had at least one zero-volume month OR missing month after first sale
     def stockout_flag(grp):
-        sorted_grp = grp.sort_values(["Year", "Month"])
-        vols = sorted_grp["monthly_volume"].values
-        if len(vols) < 3:
+        if len(grp) < 2:
             return 0
-        # Zero sandwiched between non-zeros
-        for i in range(1, len(vols) - 1):
-            if vols[i] == 0 and vols[i - 1] > 0 and vols[i + 1] > 0:
-                return 1
+        sorted_grp = grp.sort_values(["Year", "Month"])
+        
+        # Check for zeros in existing records
+        if (sorted_grp["monthly_volume"] == 0).any():
+            return 1
+            
+        # Check for gaps in the timeline (missing months)
+        # Create a date range from first to last record
+        start_date = datetime(int(sorted_grp["Year"].min()), int(sorted_grp["Month"].min()), 1)
+        end_date   = datetime(int(sorted_grp["Year"].max()), int(sorted_grp["Month"].max()), 1)
+        
+        expected_months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month) + 1
+        if len(sorted_grp) < expected_months:
+            return 1 # There are gaps in history
+            
         return 0
 
     feats["stockout_flag"] = grouped.apply(stockout_flag)
