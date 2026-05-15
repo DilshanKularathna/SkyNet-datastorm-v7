@@ -1,4 +1,4 @@
-# SkyNet — Data Storm v7.0 Winning Strategy
+# SkyNet — Data Storm v7.0
 
 This repository contains the complete data engineering and modeling pipeline for the Data Storm v7.0 competition. Our approach focuses on **Latent Demand Estimation** using a left-censored demand uncaping methodology.
 
