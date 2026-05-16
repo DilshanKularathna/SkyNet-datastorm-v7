@@ -1,0 +1,295 @@
+[
+  {
+    "file": "transactions_history_final.csv",
+    "status": "OK",
+    "rows": 2376389,
+    "columns": 7,
+    "column_names": [
+      "Outlet_ID",
+      "Year",
+      "Month",
+      "Distributor_ID",
+      "SKU_ID",
+      "Volume_Liters",
+      "Total_Bill_Value"
+    ],
+    "ingested_at": "2026-05-16T08:18:13.063853",
+    "size_bytes": 169157260,
+    "dtypes": {
+      "Outlet_ID": "str",
+      "Year": "int64",
+      "Month": "int64",
+      "Distributor_ID": "str",
+      "SKU_ID": "str",
+      "Volume_Liters": "float64",
+      "Total_Bill_Value": "float64"
+    },
+    "null_summary": {
+      "Outlet_ID": 0,
+      "Year": 0,
+      "Month": 0,
+      "Distributor_ID": 0,
+      "SKU_ID": 0,
+      "Volume_Liters": 0,
+      "Total_Bill_Value": 0
+    },
+    "null_cols_only": {},
+    "unique_value_profile": {
+      "Distributor_ID": [
+        "DIST_C_01",
+        "DIST_C_02",
+        "DIST_C_03",
+        "DIST_NW_01",
+        "DIST_NW_02",
+        "DIST_S_01",
+        "DIST_S_02",
+        "DIST_W_01",
+        "DIST_W_02",
+        "DIST_W_03"
+      ]
+    },
+    "sample_head": [
+      {
+        "Outlet_ID": "OUT_19886",
+        "Year": 2024,
+        "Month": 12,
+        "Distributor_ID": "DIST_S_02",
+        "SKU_ID": "SKU_10",
+        "Volume_Liters": 5.897879335966825,
+        "Total_Bill_Value": 2177.6323588066048
+      },
+      {
+        "Outlet_ID": "OUT_00837",
+        "Year": 2024,
+        "Month": 2,
+        "Distributor_ID": "DIST_W_01",
+        "SKU_ID": "SKU_03",
+        "Volume_Liters": 20.697364236480283,
+        "Total_Bill_Value": 7244.084814428728
+      },
+      {
+        "Outlet_ID": "OUT_15438",
+        "Year": 2025,
+        "Month": 12,
+        "Distributor_ID": "DIST_NW_01",
+        "SKU_ID": "SKU_02",
+        "Volume_Liters": 55.10180051517352,
+        "Total_Bill_Value": 13959.108787360148
+      }
+    ]
+  },
+  {
+    "file": "outlet_master.csv",
+    "status": "OK",
+    "rows": 20000,
+    "columns": 4,
+    "column_names": [
+      "Outlet_ID",
+      "Outlet_Size",
+      "Cooler_Count",
+      "Outlet_Type"
+    ],
+    "ingested_at": "2026-05-16T08:18:13.108761",
+    "size_bytes": 507648,
+    "dtypes": {
+      "Outlet_ID": "str",
+      "Outlet_Size": "str",
+      "Cooler_Count": "int64",
+      "Outlet_Type": "str"
+    },
+    "null_summary": {
+      "Outlet_ID": 0,
+      "Outlet_Size": 196,
+      "Cooler_Count": 0,
+      "Outlet_Type": 0
+    },
+    "null_cols_only": {
+      "Outlet_Size": 196
+    },
+    "unique_value_profile": {
+      "Outlet_Size": [
+        "Extra Large",
+        "Large",
+        "Medium",
+        "Small",
+        "small"
+      ],
+      "Outlet_Type": [
+        "Bakery",
+        "Bakry",
+        "Eatery",
+        "Grocery",
+        "Grocry",
+        "Hotel",
+        "Kiosk",
+        "Pharmacy",
+        "SMMT"
+      ]
+    },
+    "sample_head": [
+      {
+        "Outlet_ID": "OUT_00001",
+        "Outlet_Size": "Medium",
+        "Cooler_Count": 1,
+        "Outlet_Type": "Grocry"
+      },
+      {
+        "Outlet_ID": "OUT_00002",
+        "Outlet_Size": "Small",
+        "Cooler_Count": 0,
+        "Outlet_Type": "Hotel"
+      },
+      {
+        "Outlet_ID": "OUT_00003",
+        "Outlet_Size": "Small",
+        "Cooler_Count": 1,
+        "Outlet_Type": "Pharmacy"
+      }
+    ]
+  },
+  {
+    "file": "outlet_coordinates.csv",
+    "status": "OK",
+    "rows": 20000,
+    "columns": 3,
+    "column_names": [
+      "Outlet_ID",
+      "Latitude",
+      "Longitude"
+    ],
+    "ingested_at": "2026-05-16T08:18:13.131037",
+    "size_bytes": 575148,
+    "dtypes": {
+      "Outlet_ID": "str",
+      "Latitude": "float64",
+      "Longitude": "float64"
+    },
+    "null_summary": {
+      "Outlet_ID": 0,
+      "Latitude": 0,
+      "Longitude": 0
+    },
+    "null_cols_only": {},
+    "unique_value_profile": {},
+    "sample_head": [
+      {
+        "Outlet_ID": "OUT_00001",
+        "Latitude": 7.089846,
+        "Longitude": 79.979055
+      },
+      {
+        "Outlet_ID": "OUT_00002",
+        "Latitude": 7.000558,
+        "Longitude": 80.012422
+      },
+      {
+        "Outlet_ID": "OUT_00003",
+        "Latitude": 6.80617,
+        "Longitude": 79.854547
+      }
+    ]
+  },
+  {
+    "file": "distributor_seasonality_details.csv",
+    "status": "OK",
+    "rows": 360,
+    "columns": 4,
+    "column_names": [
+      "Distributor_ID",
+      "Year",
+      "Month",
+      "Seasonality_Index"
+    ],
+    "ingested_at": "2026-05-16T08:18:13.143537",
+    "size_bytes": 9767,
+    "dtypes": {
+      "Distributor_ID": "str",
+      "Year": "int64",
+      "Month": "int64",
+      "Seasonality_Index": "str"
+    },
+    "null_summary": {
+      "Distributor_ID": 0,
+      "Year": 0,
+      "Month": 0,
+      "Seasonality_Index": 0
+    },
+    "null_cols_only": {},
+    "unique_value_profile": {
+      "Seasonality_Index": [
+        "Favorable",
+        "Moderate",
+        "Un-Favorable"
+      ]
+    },
+    "sample_head": [
+      {
+        "Distributor_ID": "DIST_W_01",
+        "Year": 2023,
+        "Month": 1,
+        "Seasonality_Index": "Moderate"
+      },
+      {
+        "Distributor_ID": "DIST_W_01",
+        "Year": 2023,
+        "Month": 2,
+        "Seasonality_Index": "Moderate"
+      },
+      {
+        "Distributor_ID": "DIST_W_01",
+        "Year": 2023,
+        "Month": 3,
+        "Seasonality_Index": "Moderate"
+      }
+    ]
+  },
+  {
+    "file": "holiday_list.csv",
+    "status": "OK",
+    "rows": 349,
+    "columns": 3,
+    "column_names": [
+      "Date",
+      "Holiday_Name",
+      "Holiday_Type"
+    ],
+    "ingested_at": "2026-05-16T08:18:13.155623",
+    "size_bytes": 20180,
+    "dtypes": {
+      "Date": "str",
+      "Holiday_Name": "str",
+      "Holiday_Type": "str"
+    },
+    "null_summary": {
+      "Date": 0,
+      "Holiday_Name": 0,
+      "Holiday_Type": 0
+    },
+    "null_cols_only": {},
+    "unique_value_profile": {
+      "Holiday_Type": [
+        "Bank",
+        "Mercantile",
+        "Poya Day",
+        "Public"
+      ]
+    },
+    "sample_head": [
+      {
+        "Date": "2023-01-06T00:00:00Z",
+        "Holiday_Name": "Duruthu Full Moon Poya Day",
+        "Holiday_Type": "Public"
+      },
+      {
+        "Date": "2023-01-15T00:00:00Z",
+        "Holiday_Name": "Tamil Thai Pongal Day",
+        "Holiday_Type": "Public"
+      },
+      {
+        "Date": "2023-01-16T00:00:00Z",
+        "Holiday_Name": "Additional Holiday in lieu of Tamil Thai Pongal falling on Sunday",
+        "Holiday_Type": "Public"
+      }
+    ]
+  }
+]

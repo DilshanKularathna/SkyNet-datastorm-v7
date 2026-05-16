@@ -1,473 +1,343 @@
 """
 =============================================================================
-Data Quality Functions — SkyNet DataStorm v7
-=============================================================================
-All reusable, parameterised DQ checks live here.
-Every function returns (clean_df, rejected_df) and NEVER silently drops rows.
-Every rejected row carries a 'failure_reason' column.
+dq_checks/quality_functions.py
+Reusable, parameterisable Data Quality check functions.
+
+Each check returns (clean_df, rejected_df).
+Every rejected record carries a 'failure_reason' column — never silently dropped.
 =============================================================================
 """
 
-import re
 import logging
 from datetime import datetime
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 log = logging.getLogger(__name__)
 
-# ── Sri Lanka bounding box (approx.) ─────────────────────────────────────────
-SRI_LANKA_BOUNDS = {
-    "lat_min": 5.85,
-    "lat_max": 9.90,
-    "lon_min": 79.65,
-    "lon_max": 81.90,
-}
+# Sri Lanka geographic bounding box
+SL_LAT_MIN, SL_LAT_MAX = 5.9,  9.8
+SL_LON_MIN, SL_LON_MAX = 79.6, 81.9
 
 
-# =============================================================================
-# Helper: tag rows with a failure reason and append to a quarantine bucket
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal helper
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _tag_and_quarantine(
-    bad_rows: pd.DataFrame,
-    reason: str,
-    quarantine_bucket: list,
-) -> None:
-    """Stamp a failure_reason and push rows into the quarantine bucket."""
-    if bad_rows.empty:
-        return
-    tagged = bad_rows.copy()
-    if "failure_reason" not in tagged.columns:
-        tagged["failure_reason"] = ""
-    # Append to existing reason (a row may fail multiple checks)
-    tagged["failure_reason"] = tagged["failure_reason"].apply(
-        lambda x: f"{x}; {reason}" if x else reason
-    )
-    quarantine_bucket.append(tagged)
-    log.warning("  [DQ] %d rows flagged — %s", len(bad_rows), reason)
+def _tag_rejected(df: pd.DataFrame, reason: str) -> pd.DataFrame:
+    """Stamp failure_reason onto a subset of rejected rows."""
+    out = df.copy()
+    out["failure_reason"] = reason
+    return out
 
 
-# =============================================================================
-# 1. Null / Missing Value Check
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Null / Empty check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_nulls(
-    df: pd.DataFrame,
-    mandatory_cols: list,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_nulls(df: pd.DataFrame, mandatory_cols: list, dataset_name: str):
     """
-    Flag rows where any mandatory column is null.
-
-    Returns
-    -------
-    clean_df     : rows where ALL mandatory columns are non-null
-    rejected_df  : rows with at least one null in mandatory_cols
+    Reject records where any mandatory field is null or an empty string.
+    Returns (clean_df, rejected_df).
     """
-    log.info("[%s] check_nulls — mandatory columns: %s", dataset_name, mandatory_cols)
-    existing_cols = [c for c in mandatory_cols if c in df.columns]
-    missing_mask = df[existing_cols].isnull().any(axis=1)
+    mask = df[mandatory_cols].isnull().any(axis=1)
+    for col in mandatory_cols:
+        if df[col].dtype == object:
+            mask |= df[col].astype(str).str.strip().eq("")
 
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[missing_mask],
-        reason="NULL value in mandatory column",
-        quarantine_bucket=quarantine,
-    )
-    clean_df = df[~missing_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
+    rejected = _tag_rejected(df[mask], f"NULL_VALUE: mandatory field(s) [{', '.join(mandatory_cols)}]")
+    clean    = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_nulls: %d records rejected", dataset_name, mask.sum())
+    else:
+        log.info("  [%s] check_nulls: PASS", dataset_name)
+
+    return clean, rejected
 
 
-# =============================================================================
-# 2. Duplicate Check
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Duplicate check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_duplicates(
-    df: pd.DataFrame,
-    primary_key: list,
-    dataset_name: str,
-    keep: str = "first",
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_duplicates(df: pd.DataFrame, primary_key: list, dataset_name: str):
     """
-    Flag duplicate rows based on a composite primary key.
-
-    Parameters
-    ----------
-    keep : 'first' keeps the first occurrence; duplicates are quarantined.
+    Detect duplicate records based on a configurable composite key.
+    First occurrence is kept; all subsequent duplicates are rejected.
     """
-    log.info("[%s] check_duplicates — pk: %s", dataset_name, primary_key)
-    existing_pk = [c for c in primary_key if c in df.columns]
-    dup_mask = df.duplicated(subset=existing_pk, keep=keep)
+    dup_mask = df.duplicated(subset=primary_key, keep="first")
 
-    quarantine: list = []
-    _tag_and_quarantine(
+    rejected = _tag_rejected(
         df[dup_mask],
-        reason=f"Duplicate primary key: {existing_pk}",
-        quarantine_bucket=quarantine,
+        f"DUPLICATE: composite key ({', '.join(primary_key)}) appears more than once"
     )
-    clean_df = df[~dup_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
+    clean = df[~dup_mask].copy()
+
+    if dup_mask.sum():
+        log.warning("  [%s] check_duplicates: %d duplicate records rejected", dataset_name, dup_mask.sum())
+    else:
+        log.info("  [%s] check_duplicates: PASS", dataset_name)
+
+    return clean, rejected
 
 
-# =============================================================================
-# 3. Referential Integrity Check
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Referential integrity check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_referential_integrity(
-    df: pd.DataFrame,
-    fk_col: str,
-    ref_df: pd.DataFrame,
-    ref_col: str,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_referential_integrity(df: pd.DataFrame, fk_col: str,
+                                 ref_df: pd.DataFrame, ref_col: str,
+                                 dataset_name: str):
     """
-    Flag rows where fk_col value does not exist in ref_df[ref_col].
-    Classic use-case: transactions referencing unknown Outlet_IDs.
+    Validate that every FK value in df[fk_col] exists in ref_df[ref_col].
+    Orphan records (no matching parent) are rejected.
     """
-    log.info(
-        "[%s] check_referential_integrity — %s → %s",
-        dataset_name, fk_col, ref_col,
-    )
     valid_keys = set(ref_df[ref_col].dropna().unique())
-    orphan_mask = ~df[fk_col].isin(valid_keys)
+    mask       = ~df[fk_col].isin(valid_keys)
 
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[orphan_mask],
-        reason=f"Referential integrity failure: {fk_col} not in reference set",
-        quarantine_bucket=quarantine,
+    rejected = _tag_rejected(
+        df[mask],
+        f"REF_INTEGRITY: {fk_col} value not found in reference column [{ref_col}]"
     )
-    clean_df = df[~orphan_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
+    clean = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_referential_integrity: %d orphan records rejected "
+                    "(sample bad keys: %s)",
+                    dataset_name, mask.sum(),
+                    list(df.loc[mask, fk_col].unique())[:5])
+    else:
+        log.info("  [%s] check_referential_integrity: PASS", dataset_name)
+
+    return clean, rejected
 
 
-# =============================================================================
-# 4. Value Range Check
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Value range check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_value_range(
-    df: pd.DataFrame,
-    col: str,
-    min_val: Optional[float],
-    max_val: Optional[float],
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_value_range(df: pd.DataFrame, col: str, min_val, max_val,
+                      dataset_name: str):
     """
-    Flag rows where col is outside [min_val, max_val].
-    Pass None to skip a boundary check.
+    Assert that a numeric field falls within [min_val, max_val].
+    Pass None for either bound to skip that side.
+    NaN values (coercion failures) are also rejected here.
     """
-    log.info(
-        "[%s] check_value_range — %s in [%s, %s]",
-        dataset_name, col, min_val, max_val,
-    )
-    if col not in df.columns:
-        log.warning("  Column '%s' not found — skipping range check.", col)
-        return df.copy(), pd.DataFrame(columns=df.columns)
-
-    mask = pd.Series(False, index=df.index)
+    mask = df[col].isnull()   # catches to_numeric coercion failures
     if min_val is not None:
         mask |= df[col] < min_val
     if max_val is not None:
         mask |= df[col] > max_val
 
-    quarantine: list = []
-    _tag_and_quarantine(
+    bounds   = f"[{min_val}, {max_val}]"
+    rejected = _tag_rejected(df[mask], f"VALUE_RANGE: {col} outside expected bounds {bounds}")
+    clean    = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_value_range (%s %s): %d records rejected",
+                    dataset_name, col, bounds, mask.sum())
+    else:
+        log.info("  [%s] check_value_range (%s): PASS", dataset_name, col)
+
+    return clean, rejected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. Allowed values check (categorical)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_allowed_values(df: pd.DataFrame, col: str, allowed: list,
+                          dataset_name: str):
+    """
+    Validate that a categorical column contains only allowed values.
+    Comparison is case-insensitive; clean output is normalised to canonical casing.
+    """
+    normalised    = df[col].astype(str).str.strip()
+    allowed_lower = [str(v).lower() for v in allowed]
+    mask          = ~normalised.str.lower().isin(allowed_lower)
+
+    unique_bad = normalised[mask].unique()
+    rejected   = _tag_rejected(
         df[mask],
-        reason=f"Value out of range for {col}: expected [{min_val}, {max_val}]",
-        quarantine_bucket=quarantine,
+        f"INVALID_VALUE: {col} unexpected value(s): {list(unique_bad)[:5]}"
     )
-    clean_df = df[~mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
+
+    clean = df[~mask].copy()
+    # Normalise to canonical casing (e.g. "un-favorable" → "Un-Favorable")
+    canonical_map = {v.lower(): v for v in allowed}
+    clean[col]    = clean[col].astype(str).str.strip().str.lower().map(canonical_map)
+
+    if mask.sum():
+        log.warning("  [%s] check_allowed_values (%s): %d records rejected. "
+                    "Unknown values: %s",
+                    dataset_name, col, mask.sum(), list(unique_bad)[:10])
+    else:
+        log.info("  [%s] check_allowed_values (%s): PASS", dataset_name, col)
+
+    return clean, rejected
 
 
-# =============================================================================
-# 5. Format / Pattern Check
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Ghost transaction check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_format(
-    df: pd.DataFrame,
-    col: str,
-    pattern: str,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_ghost_transactions(df: pd.DataFrame, vol_col: str, val_col: str,
+                              dataset_name: str):
     """
-    Flag rows where col does not match the given regex pattern.
+    Flag ghost entries: volume <= 0 but bill value > 0.
+    These are SFA connectivity / retry artifacts and must be quarantined.
     """
-    log.info("[%s] check_format — %s ~ /%s/", dataset_name, col, pattern)
-    if col not in df.columns:
-        log.warning("  Column '%s' not found — skipping format check.", col)
-        return df.copy(), pd.DataFrame(columns=df.columns)
+    mask = (df[vol_col] <= 0) & (df[val_col] > 0)
 
-    compiled = re.compile(pattern)
-    bad_mask = ~df[col].astype(str).str.match(compiled)
-
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[bad_mask],
-        reason=f"Format mismatch in {col}: does not match pattern '{pattern}'",
-        quarantine_bucket=quarantine,
+    rejected = _tag_rejected(
+        df[mask],
+        f"GHOST_TRANSACTION: {vol_col}<=0 but {val_col}>0 (SFA connectivity artifact)"
     )
-    clean_df = df[~bad_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
+    clean = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_ghost_transactions: %d ghost records rejected", dataset_name, mask.sum())
+    else:
+        log.info("  [%s] check_ghost_transactions: PASS", dataset_name)
+
+    return clean, rejected
 
 
-# =============================================================================
-# 6. Ghost Transaction Check (zero qty / volume but non-zero bill value)
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Volume spike check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_ghost_transactions(
-    df: pd.DataFrame,
-    volume_col: str,
-    value_col: str,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_volume_spikes(df: pd.DataFrame, outlet_col: str, vol_col: str,
+                         spike_multiplier: float, dataset_name: str):
     """
-    Ghost transaction: Volume_Liters == 0 but Total_Bill_Value > 0.
-    Also catches negative volumes (credit note miscodings).
+    Reject single-period rows where volume exceeds spike_multiplier × outlet mean.
+    Designed to catch data-entry errors (e.g. extra zero added).
     """
-    log.info("[%s] check_ghost_transactions", dataset_name)
-    ghost_mask = (df[volume_col] == 0) & (df[value_col] > 0)
-    negative_mask = df[volume_col] < 0
+    outlet_mean = df.groupby(outlet_col)[vol_col].transform("mean")
+    mask        = df[vol_col] > (spike_multiplier * outlet_mean)
 
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[ghost_mask],
-        reason="Ghost transaction: zero volume with non-zero bill value",
-        quarantine_bucket=quarantine,
+    rejected = _tag_rejected(
+        df[mask],
+        f"VOLUME_SPIKE: {vol_col} > {spike_multiplier}× outlet mean (likely data-entry error)"
     )
-    _tag_and_quarantine(
-        df[negative_mask & ~ghost_mask],
-        reason="Negative volume: likely credit note miscoding",
-        quarantine_bucket=quarantine,
+    clean = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_volume_spikes: %d spike records rejected", dataset_name, mask.sum())
+    else:
+        log.info("  [%s] check_volume_spikes: PASS", dataset_name)
+
+    return clean, rejected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. Future date check
+# ─────────────────────────────────────────────────────────────────────────────
+
+def check_future_dates(df: pd.DataFrame, year_col: str, month_col: str,
+                        dataset_name: str,
+                        ceiling_year: int = 2025, ceiling_month: int = 12):
+    """
+    Reject records with Year/Month beyond the data-collection ceiling.
+    Default ceiling: December 2025 (3-year dataset).
+    """
+    mask = (df[year_col] > ceiling_year) | (
+        (df[year_col] == ceiling_year) & (df[month_col] > ceiling_month)
     )
-    combined_bad = ghost_mask | negative_mask
-    clean_df = df[~combined_bad].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
+
+    rejected = _tag_rejected(
+        df[mask],
+        f"FUTURE_DATE: {year_col}/{month_col} exceeds collection ceiling "
+        f"{ceiling_year}-{ceiling_month:02d}"
+    )
+    clean = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_future_dates: %d future-dated records rejected", dataset_name, mask.sum())
+    else:
+        log.info("  [%s] check_future_dates: PASS", dataset_name)
+
+    return clean, rejected
 
 
-# =============================================================================
-# 7. Implausible Volume Spike Check (10× monthly average per outlet)
-# =============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Coordinate sanity check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_volume_spikes(
-    df: pd.DataFrame,
-    group_col: str,
-    volume_col: str,
-    spike_factor: float,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+def check_coordinates(df: pd.DataFrame, lat_col: str, lon_col: str,
+                       dataset_name: str):
     """
-    Flag rows where volume > spike_factor × mean volume for that outlet.
-    spike_factor=10 catches data-entry errors (10× average in a single month).
+    Reject coordinates that are:
+      - Null
+      - Exactly (0, 0) — ghost coordinates
+      - Outside the Sri Lanka bounding box
     """
+    null_mask  = df[lat_col].isnull() | df[lon_col].isnull()
+    ghost_mask = (~null_mask) & (df[lat_col] == 0) & (df[lon_col] == 0)
+    bbox_mask  = (
+        (~null_mask) & (~ghost_mask) & (
+            (df[lat_col] < SL_LAT_MIN) | (df[lat_col] > SL_LAT_MAX) |
+            (df[lon_col] < SL_LON_MIN) | (df[lon_col] > SL_LON_MAX)
+        )
+    )
+    mask = null_mask | ghost_mask | bbox_mask
+
+    def _reason(row):
+        if pd.isnull(row[lat_col]) or pd.isnull(row[lon_col]):
+            return "NULL_COORD: latitude or longitude is null"
+        if row[lat_col] == 0 and row[lon_col] == 0:
+            return "GHOST_COORD: (0, 0) placeholder coordinate"
+        return (f"OUT_OF_BOUNDS: lat={row[lat_col]:.4f}, lon={row[lon_col]:.4f} "
+                f"outside Sri Lanka bbox")
+
+    rejected_df = df[mask].copy()
+    if not rejected_df.empty:
+        rejected_df["failure_reason"] = rejected_df.apply(_reason, axis=1)
+
+    clean = df[~mask].copy()
+
+    if mask.sum():
+        log.warning("  [%s] check_coordinates: %d invalid coordinate records rejected",
+                    dataset_name, mask.sum())
+    else:
+        log.info("  [%s] check_coordinates: PASS", dataset_name)
+
+    return clean, rejected_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. DQ Summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+def dq_summary(dataset_name: str, original_count: int,
+               clean_count: int, rejected_count: int) -> dict:
+    """Return a structured summary dict for the JSON DQ report."""
+    retention = (clean_count / original_count * 100) if original_count else 0
     log.info(
-        "[%s] check_volume_spikes — group=%s  factor=%.1f×",
-        dataset_name, group_col, spike_factor,
+        "  [%s] SUMMARY — original=%d | clean=%d | rejected=%d | retention=%.1f%%",
+        dataset_name, original_count, clean_count, rejected_count, retention,
     )
-    group_mean = df.groupby(group_col)[volume_col].transform("mean")
-    spike_mask = df[volume_col] > (spike_factor * group_mean)
-
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[spike_mask],
-        reason=f"Implausible volume spike (>{spike_factor}× outlet mean)",
-        quarantine_bucket=quarantine,
-    )
-    clean_df = df[~spike_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
-
-
-# =============================================================================
-# 8. Future-Dated Transaction Check
-# =============================================================================
-
-def check_future_dates(
-    df: pd.DataFrame,
-    year_col: str,
-    month_col: str,
-    dataset_name: str,
-    reference_date: Optional[datetime] = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Flag rows where (Year, Month) is in the future relative to reference_date.
-    Defaults to today if reference_date is None.
-    """
-    log.info("[%s] check_future_dates", dataset_name)
-    ref = reference_date or datetime.now()
-    ref_year, ref_month = ref.year, ref.month
-
-    future_mask = (df[year_col] > ref_year) | (
-        (df[year_col] == ref_year) & (df[month_col] > ref_month)
-    )
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[future_mask],
-        reason=f"Future-dated transaction (after {ref_year}-{ref_month:02d})",
-        quarantine_bucket=quarantine,
-    )
-    clean_df = df[~future_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
-
-
-# =============================================================================
-# 9. Coordinate Validity Check (must be inside Sri Lanka bounding box)
-# =============================================================================
-
-def check_coordinates(
-    df: pd.DataFrame,
-    lat_col: str,
-    lon_col: str,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Flag outlets whose GPS coordinates fall outside Sri Lanka's bounding box
-    or in the ocean (rough heuristic: both lat AND lon numeric and in bounds).
-    """
-    log.info("[%s] check_coordinates", dataset_name)
-    b = SRI_LANKA_BOUNDS
-
-    lat_invalid = (
-        df[lat_col].isnull()
-        | (df[lat_col] < b["lat_min"])
-        | (df[lat_col] > b["lat_max"])
-    )
-    lon_invalid = (
-        df[lon_col].isnull()
-        | (df[lon_col] < b["lon_min"])
-        | (df[lon_col] > b["lon_max"])
-    )
-    bad_mask = lat_invalid | lon_invalid
-
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[bad_mask],
-        reason="Coordinates outside Sri Lanka bounding box (or null)",
-        quarantine_bucket=quarantine,
-    )
-    clean_df = df[~bad_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
-
-
-# =============================================================================
-# 10. Duplicate Order ID on Different Dates (system retry artifact)
-# =============================================================================
-
-def check_order_id_date_conflict(
-    df: pd.DataFrame,
-    order_id_col: str,
-    year_col: str,
-    month_col: str,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Detect order IDs that appear on more than one (Year, Month) combination —
-    classic sign of system retry artefacts.
-    """
-    log.info("[%s] check_order_id_date_conflict", dataset_name)
-    if order_id_col not in df.columns:
-        log.warning("  Column '%s' not found — skipping.", order_id_col)
-        return df.copy(), pd.DataFrame(columns=df.columns)
-
-    period_per_order = (
-        df.groupby(order_id_col)[[year_col, month_col]]
-        .nunique()
-        .max(axis=1)
-    )
-    conflicted_ids = period_per_order[period_per_order > 1].index
-    conflict_mask = df[order_id_col].isin(conflicted_ids)
-
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[conflict_mask],
-        reason="Order ID appears across multiple (Year, Month) periods — retry artefact",
-        quarantine_bucket=quarantine,
-    )
-    clean_df = df[~conflict_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
-
-
-# =============================================================================
-# 11. Allowed Values Check (categorical columns)
-# =============================================================================
-
-def check_allowed_values(
-    df: pd.DataFrame,
-    col: str,
-    allowed: list,
-    dataset_name: str,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Flag rows where col contains values not in the allowed set.
-    """
-    log.info("[%s] check_allowed_values — %s ∈ %s", dataset_name, col, allowed)
-    if col not in df.columns:
-        log.warning("  Column '%s' not found — skipping.", col)
-        return df.copy(), pd.DataFrame(columns=df.columns)
-
-    bad_mask = ~df[col].isin(allowed)
-    quarantine: list = []
-    _tag_and_quarantine(
-        df[bad_mask],
-        reason=f"Invalid value in {col}: not in {allowed}",
-        quarantine_bucket=quarantine,
-    )
-    clean_df = df[~bad_mask].copy()
-    rejected_df = pd.concat(quarantine, ignore_index=True) if quarantine else pd.DataFrame(columns=df.columns)
-    log.info("  → clean=%d  rejected=%d", len(clean_df), len(rejected_df))
-    return clean_df, rejected_df
-
-
-# =============================================================================
-# 12. DQ Summary Report
-# =============================================================================
-
-def dq_summary(
-    dataset_name: str,
-    original_count: int,
-    clean_count: int,
-    rejected_count: int,
-) -> dict:
-    """Return a structured DQ summary dict for logging / reporting."""
-    pct_rejected = (rejected_count / original_count * 100) if original_count else 0
-    summary = {
-        "dataset": dataset_name,
-        "original_rows": original_count,
-        "clean_rows": clean_count,
-        "rejected_rows": rejected_count,
-        "rejection_rate_pct": round(pct_rejected, 2),
-        "run_timestamp": datetime.now().isoformat(),
+    return {
+        "dataset":         dataset_name,
+        "original_count":  original_count,
+        "clean_count":     clean_count,
+        "rejected_count":  rejected_count,
+        "retention_pct":   round(retention, 2),
     }
-    log.info(
-        "[%s] DQ Summary → original=%d  clean=%d  rejected=%d  (%.1f%% rejected)",
-        dataset_name, original_count, clean_count, rejected_count, pct_rejected,
-    )
-    return summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. Utility: discover unique values in a column (use before check_allowed_values)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def discover_unique_values(df: pd.DataFrame, col: str, dataset_name: str) -> list:
+    """
+    Log and return unique values for a categorical column.
+    Run this during Bronze/Silver audit to learn what's actually in the data
+    before committing to an allowed-values list.
+    """
+    uniques = sorted(df[col].dropna().astype(str).str.strip().unique().tolist())
+    log.info("  [%s] unique values in '%s' (%d): %s",
+             dataset_name, col, len(uniques), uniques)
+    return uniques

@@ -1,0 +1,37 @@
+[
+  {
+    "dataset": "outlet_master",
+    "original_count": 20000,
+    "clean_count": 19804,
+    "rejected_count": 196,
+    "retention_pct": 99.02
+  },
+  {
+    "dataset": "transactions_history",
+    "original_count": 2376389,
+    "clean_count": 2328268,
+    "rejected_count": 48121,
+    "retention_pct": 97.98
+  },
+  {
+    "dataset": "outlet_coordinates",
+    "original_count": 20000,
+    "clean_count": 19564,
+    "rejected_count": 436,
+    "retention_pct": 97.82
+  },
+  {
+    "dataset": "distributor_seasonality",
+    "original_count": 360,
+    "clean_count": 360,
+    "rejected_count": 0,
+    "retention_pct": 100.0
+  },
+  {
+    "dataset": "holiday_list",
+    "original_count": 349,
+    "clean_count": 76,
+    "rejected_count": 273,
+    "retention_pct": 21.78
+  }
+]

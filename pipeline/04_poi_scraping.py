@@ -1,21 +1,38 @@
 """
 =============================================================================
-Pipeline Step 04 — POI Scraping via Overpass API (OpenStreetMap)
+Pipeline Step 04 — POI Data Extraction (OpenStreetMap / Local PBF)
 =============================================================================
-For each outlet in coordinates_clean.csv, queries OSM for key POI counts
-within configurable radii. Results saved to data/external/poi_features.csv.
 
-No API key needed — Overpass API is free and open.
+Two modes (choose based on your environment):
+
+  Mode A — Local PBF (RECOMMENDED, fastest, no rate limits):
+    1. Download: https://download.geofabrik.de/asia/sri-lanka-latest.osm.pbf
+    2. Place in:  data/external/sri-lanka-latest.osm.pbf
+    3. Run:       python pipeline/04_poi_scraping.py
+
+  Mode B — Overpass API (fallback, slower, network-dependent):
+    1. Set USE_LOCAL_PBF = False below
+    2. Run:       python pipeline/04_poi_scraping.py
+       Add --resume flag to continue an interrupted run:
+       python pipeline/04_poi_scraping.py --resume
+
+FIXES vs original:
+  - Removed duplicate if __name__ == "__main__" block.
+  - Added resume parameter to run_poi_scraping() (was called with resume=True
+    but the function signature didn't accept it — caused TypeError).
+  - Improved progress logging and partial-save logic.
+  - Added is_urban_score (continuous, not binary) as a richer feature.
 =============================================================================
 """
 
+import argparse
 import logging
 import sys
 import time
 from pathlib import Path
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -23,29 +40,28 @@ from urllib3.util.retry import Retry
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# ── Local Map Data Configuration (Option A - 100x Faster) ─────────────────────
-# Download link: https://download.geofabrik.de/asia/sri-lanka-latest.osm.pbf
-# Place the file in data/external/ and update the path below.
-PBF_PATH = ROOT / "data" / "external" / "sri-lanka-latest.osm.pbf"
-# ─────────────────────────────────────────────────────────────────────────────
-
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s | %(levelname)-8s | %(message)s",
                     datefmt="%Y-%m-%d %H:%M:%S")
 log = logging.getLogger(__name__)
 
+# ── Mode switch ───────────────────────────────────────────────────────────────
+USE_LOCAL_PBF = True   # Set False to use Overpass API instead
+
+PBF_PATH = ROOT / "data" / "external" / "sri-lanka-latest.osm.pbf"
+
 SILVER_DIR = ROOT / "data" / "silver"
 EXTERNAL   = ROOT / "data" / "external"
 EXTERNAL.mkdir(parents=True, exist_ok=True)
 
-# ── Overpass endpoints (rotate on failure) ─────────────────────────────────────
+# ── Overpass endpoints (rotated on failure) ───────────────────────────────────
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ]
 
-# ── POI definitions: (label, osm_key, osm_value) ──────────────────────────────
+# ── POI definitions: (label, osm_key, osm_value) ─────────────────────────────
 POI_TYPES = [
     ("schools",            "amenity",  "school"),
     ("universities",       "amenity",  "university"),
@@ -64,7 +80,6 @@ POI_TYPES = [
     ("construction_sites", "landuse",  "construction"),
 ]
 
-# Footfall weights (judges love a defensible weighted score)
 FOOTFALL_WEIGHTS = {
     "schools":            3.0,
     "universities":       4.0,
@@ -83,15 +98,15 @@ FOOTFALL_WEIGHTS = {
     "construction_sites": 2.5,
 }
 
-RADIUS_M           = 500       # metres around each outlet
-REQUEST_DELAY_SEC  = 1.2       # polite delay between requests
-MAX_RETRIES        = 3
-TIMEOUT_SEC        = 20
-BATCH_SAVE_EVERY   = 50        # save partial results every N outlets
+RADIUS_M          = 500
+REQUEST_DELAY_SEC = 1.2
+MAX_RETRIES       = 3
+TIMEOUT_SEC       = 20
+BATCH_SAVE_EVERY  = 50
 
 
 # =============================================================================
-# HTTP session with retry logic
+# HTTP session
 # =============================================================================
 def _make_session() -> requests.Session:
     session = requests.Session()
@@ -102,33 +117,26 @@ def _make_session() -> requests.Session:
     session.mount("http://",  adapter)
     return session
 
-
 SESSION = _make_session()
 
 
 # =============================================================================
-# Single POI count query
+# Overpass API — single POI count
 # =============================================================================
 def query_poi_count(lat: float, lon: float, key: str, value: str,
                     radius: int = RADIUS_M, endpoint_idx: int = 0) -> int:
-    """
-    Returns count of OSM nodes matching key=value within `radius` metres
-    of (lat, lon). Returns 0 on any error.
-    """
     endpoint = OVERPASS_ENDPOINTS[endpoint_idx % len(OVERPASS_ENDPOINTS)]
     query = (
         f'[out:json][timeout:15];'
-        f'('
-        f'  node["{key}"="{value}"](around:{radius},{lat},{lon});'
-        f'  way["{key}"="{value}"](around:{radius},{lat},{lon});'
-        f'  relation["{key}"="{value}"](around:{radius},{lat},{lon});'
-        f');'
+        f'(node["{key}"="{value}"](around:{radius},{lat},{lon});'
+        f' way["{key}"="{value}"](around:{radius},{lat},{lon});'
+        f' relation["{key}"="{value}"](around:{radius},{lat},{lon}););'
         f'out count;'
     )
     try:
-        resp = SESSION.get(endpoint, params={"data": query}, timeout=TIMEOUT_SEC)
+        resp  = SESSION.get(endpoint, params={"data": query}, timeout=TIMEOUT_SEC)
         resp.raise_for_status()
-        data = resp.json()
+        data  = resp.json()
         count = int(data.get("elements", [{}])[0].get("tags", {}).get("total", 0))
         return count
     except Exception as exc:
@@ -137,122 +145,135 @@ def query_poi_count(lat: float, lon: float, key: str, value: str,
 
 
 # =============================================================================
-# All POIs for one outlet
+# Overpass API — all POIs for one outlet
 # =============================================================================
 def get_all_pois_for_outlet(outlet_id: str, lat: float, lon: float) -> dict:
-    """Queries all POI types for one outlet and computes footfall score."""
     row = {"Outlet_ID": outlet_id}
     for label, key, value in POI_TYPES:
-        count = query_poi_count(lat, lon, key, value)
-        row[f"poi_{label}"] = count
-        time.sleep(0.1)  # micro-sleep between POI types
+        row[f"poi_{label}"] = query_poi_count(lat, lon, key, value)
+        time.sleep(0.1)
 
-    # Footfall score: weighted sum
     row["poi_footfall_score"] = sum(
         row.get(f"poi_{label}", 0) * FOOTFALL_WEIGHTS.get(label, 1.0)
         for label, _, _ in POI_TYPES
     )
-
-    # Total POI count
     row["poi_total_count"] = sum(
         row.get(f"poi_{label}", 0) for label, _, _ in POI_TYPES
     )
-
-    # Urban/rural heuristic: >10 POIs within 500m → urban
-    row["is_urban"] = int(row["poi_total_count"] > 10)
-
+    # Continuous urban score (0–1) — richer than binary is_urban
+    row["is_urban"]       = int(row["poi_total_count"] > 10)
+    row["is_urban_score"] = min(row["poi_total_count"] / 30.0, 1.0)  # saturates at 30 POIs
     return row
 
 
 # =============================================================================
-# Local PBF Extraction Logic (No Web Scraping)
+# Overpass mode — batch run with resume
 # =============================================================================
+def run_overpass_mode(coords_df: pd.DataFrame, resume: bool = False):
+    output_path   = EXTERNAL / "poi_raw.csv"
+    features_path = EXTERNAL / "poi_features.csv"
 
+    already_done = set()
+    results      = []
+
+    if resume and output_path.exists():
+        existing = pd.read_csv(output_path)
+        already_done = set(existing["Outlet_ID"].astype(str).unique())
+        results      = existing.to_dict("records")
+        log.info("  Resuming — %d outlets already scraped.", len(already_done))
+
+    pending = coords_df[~coords_df["Outlet_ID"].astype(str).isin(already_done)]
+    total   = len(pending)
+    log.info("  Outlets to scrape: %d", total)
+
+    for i, (_, row) in enumerate(pending.iterrows(), 1):
+        outlet_id = str(row["Outlet_ID"])
+        lat, lon  = float(row["Latitude"]), float(row["Longitude"])
+        poi_row   = get_all_pois_for_outlet(outlet_id, lat, lon)
+        results.append(poi_row)
+
+        if i % 10 == 0:
+            log.info("  Progress: %d / %d (%.1f%%)", i, total, i / total * 100)
+
+        if i % BATCH_SAVE_EVERY == 0:
+            pd.DataFrame(results).to_csv(output_path, index=False)
+            log.info("  Partial save — %d rows written.", len(results))
+
+        time.sleep(REQUEST_DELAY_SEC)
+
+    df = pd.DataFrame(results)
+    df.to_csv(output_path,   index=False)
+    df.to_csv(features_path, index=False)
+    log.info("  Overpass scraping complete — %d outlets saved.", len(df))
+    return df
+
+
+# =============================================================================
+# Local PBF mode
+# =============================================================================
 def run_local_poi_extraction(coords_df: pd.DataFrame, pbf_path: Path):
-    """
-    Extracts POIs from a local .pbf file using GeoPandas/pyogrio.
-    This is 100% local and very stable on Windows.
-    """
     try:
         import geopandas as gpd
         from shapely.geometry import Point
     except ImportError:
-        log.error("Local extraction requires 'geopandas' and 'shapely'.")
-        log.info("Install them with: pip install geopandas shapely")
+        log.error("Local extraction requires geopandas and shapely.")
+        log.info("Install with: pip install geopandas shapely pyogrio")
         return None
 
     log.info("Starting LOCAL extraction from: %s", pbf_path.name)
-    
-    # 1. Create GeoDataFrame for Outlets
-    outlets_gdf = gpd.GeoDataFrame(
-        coords_df, 
-        geometry=gpd.points_from_xy(coords_df.Longitude, coords_df.Latitude),
-        crs="EPSG:4326"
-    ).to_crs("EPSG:3857") # Meters
 
-    outlets_gdf['buffer'] = outlets_gdf.geometry.buffer(RADIUS_M)
-    
-    # 2. Extract Layers from PBF
-    # We check 'points' and 'multipolygons' (for centroids)
+    outlets_gdf = gpd.GeoDataFrame(
+        coords_df,
+        geometry=gpd.points_from_xy(coords_df.Longitude, coords_df.Latitude),
+        crs="EPSG:4326",
+    ).to_crs("EPSG:3857")
+    outlets_gdf["buffer"] = outlets_gdf.geometry.buffer(RADIUS_M)
+
     all_pois = []
-    
-    layers = ['points', 'multipolygons']
-    for layer in layers:
-        log.info("  Reading layer '%s' from PBF... (this takes a few seconds)", layer)
+    for layer in ["points", "multipolygons"]:
+        log.info("  Reading layer '%s'...", layer)
         try:
-            # We use pyogrio driver for speed and stability
             gdf = gpd.read_file(pbf_path, layer=layer, engine="pyogrio")
-            
-            # Filter for tags we care about
-            # GDAL/pyogrio stores OSM tags in an 'other_tags' string or specific columns
-            # We filter columns that match our keys
-            keys_to_match = list(set([t[1] for t in POI_TYPES]))
-            available_keys = [k for k in keys_to_match if k in gdf.columns]
-            
-            if not available_keys:
+            keys_to_match = list({t[1] for t in POI_TYPES})
+            available     = [k for k in keys_to_match if k in gdf.columns]
+            if not available:
                 continue
-                
-            # Filter rows that have any of our values
-            # This is a bit broad but we'll refine it below
-            mask = gdf[available_keys].notnull().any(axis=1)
+            mask   = gdf[available].notnull().any(axis=1)
             subset = gdf[mask].copy()
-            
-            if layer == 'multipolygons':
+            if layer == "multipolygons":
+                subset = subset.copy()
                 subset.geometry = subset.geometry.centroid
-            
             all_pois.append(subset)
-        except Exception as e:
-            log.warning("  Could not read layer %s: %s", layer, e)
+        except Exception as exc:
+            log.warning("  Could not read layer %s: %s", layer, exc)
 
     if not all_pois:
-        log.error("No relevant POIs found in the PBF file layers.")
+        log.error("No relevant POIs found in PBF layers.")
         return None
-        
-    pois_gdf = pd.concat(all_pois).to_crs("EPSG:3857")
-    log.info("  Total candidate POIs extracted: %d", len(pois_gdf))
 
-    # 3. Process each POI category
-    results = coords_df[['Outlet_ID']].copy()
-    
+    pois_gdf = pd.concat(all_pois).to_crs("EPSG:3857")
+    log.info("  Total candidate POIs: %d", len(pois_gdf))
+
+    results = coords_df[["Outlet_ID"]].copy()
     for label, key, value in POI_TYPES:
         log.info("  Counting %s...", label)
         if key not in pois_gdf.columns:
             results[f"poi_{label}"] = 0
             continue
-            
-        # Specific filter for this category
-        cat_subset = pois_gdf[pois_gdf[key] == value]
-        
-        if cat_subset.empty:
+        cat = pois_gdf[pois_gdf[key] == value]
+        if cat.empty:
             results[f"poi_{label}"] = 0
             continue
-            
-        # Spatial join to count POIs within 500m buffer
-        joined = gpd.sjoin(outlets_gdf.set_geometry('buffer'), cat_subset, how='inner', predicate='intersects')
-        counts = joined.groupby('Outlet_ID').size().reindex(results['Outlet_ID'], fill_value=0)
+        joined = gpd.sjoin(
+            outlets_gdf.set_geometry("buffer"), cat,
+            how="inner", predicate="intersects"
+        )
+        counts = (
+            joined.groupby("Outlet_ID").size()
+            .reindex(results["Outlet_ID"], fill_value=0)
+        )
         results[f"poi_{label}"] = counts.values
 
-    # 4. Compute Final Scores
     results["poi_footfall_score"] = sum(
         results[f"poi_{label}"] * FOOTFALL_WEIGHTS.get(label, 1.0)
         for label, _, _ in POI_TYPES
@@ -260,44 +281,74 @@ def run_local_poi_extraction(coords_df: pd.DataFrame, pbf_path: Path):
     results["poi_total_count"] = sum(
         results[f"poi_{label}"] for label, _, _ in POI_TYPES
     )
-    results["is_urban"] = (results["poi_total_count"] > 10).astype(int)
-    
-    return results.to_dict("records")
+    results["is_urban"]       = (results["poi_total_count"] > 10).astype(int)
+    results["is_urban_score"] = (results["poi_total_count"] / 30.0).clip(0, 1)
+
+    return results
 
 
 # =============================================================================
-# Main orchestrator
+# Main orchestrator  (FIXED: single __main__ block, resume parameter added)
 # =============================================================================
-def run_poi_scraping():
-    log.info("=" * 70)
-    log.info("LOCAL POI DATA EXTRACTION (NO WEB)")
-    log.info("=" * 70)
+def run_poi_scraping(resume: bool = False):
+    """
+    Entry point for POI data extraction.
 
-    if not PBF_PATH.exists():
-        log.error("CRITICAL: Local PBF file not found at: %s", PBF_PATH)
-        log.info("Please download it and place it there to continue.")
-        return
+    Parameters
+    ----------
+    resume : bool
+        If True, continue a previously interrupted Overpass API run.
+        Not applicable in local PBF mode (always processes all outlets).
+    """
+    log.info("=" * 70)
+    log.info("POI DATA EXTRACTION — mode=%s",
+             "LOCAL PBF" if USE_LOCAL_PBF else "Overpass API")
+    log.info("=" * 70)
 
     coords_df = pd.read_csv(SILVER_DIR / "coordinates_clean.csv", low_memory=False)
     coords_df = coords_df.dropna(subset=["Latitude", "Longitude"])
-    
-    output_path = EXTERNAL / "poi_raw.csv"
+    log.info("Outlets with valid coordinates: %d", len(coords_df))
+
+    output_path   = EXTERNAL / "poi_raw.csv"
     features_path = EXTERNAL / "poi_features.csv"
 
-    results = run_local_poi_extraction(coords_df, PBF_PATH)
-    
-    if results:
-        df = pd.DataFrame(results)
-        df.to_csv(output_path, index=False)
-        df.to_csv(features_path, index=False)
-        log.info("=" * 70)
-        log.info("SUCCESS: POI features saved to %s", features_path)
+    if USE_LOCAL_PBF:
+        if not PBF_PATH.exists():
+            log.error("CRITICAL: PBF file not found at: %s", PBF_PATH)
+            log.info("Download from: https://download.geofabrik.de/asia/sri-lanka-latest.osm.pbf")
+            log.info("Falling back to Overpass API mode...")
+            result_df = run_overpass_mode(coords_df, resume=resume)
+        else:
+            result = run_local_poi_extraction(coords_df, PBF_PATH)
+            if result is None:
+                log.error("Local extraction failed — falling back to Overpass API.")
+                result_df = run_overpass_mode(coords_df, resume=resume)
+            else:
+                result_df = result if isinstance(result, pd.DataFrame) \
+                            else pd.DataFrame(result)
     else:
-        log.error("Extraction failed.")
+        result_df = run_overpass_mode(coords_df, resume=resume)
 
+    if result_df is not None and not result_df.empty:
+        result_df.to_csv(output_path,   index=False)
+        result_df.to_csv(features_path, index=False)
+        log.info("=" * 70)
+        log.info("POI features saved → %s  (%d outlets)", features_path, len(result_df))
+        log.info("Top-line stats:")
+        for col in ["poi_total_count", "poi_footfall_score", "is_urban"]:
+            if col in result_df.columns:
+                log.info("  %-25s  mean=%.2f  max=%.0f",
+                         col, result_df[col].mean(), result_df[col].max())
+    else:
+        log.error("Extraction returned no results.")
+
+
+# =============================================================================
+# Entry point
+# =============================================================================
 if __name__ == "__main__":
-    run_poi_scraping()
-
-
-if __name__ == "__main__":
-    run_poi_scraping(resume=True)
+    parser = argparse.ArgumentParser(description="POI scraping for Data Storm v7.0")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume an interrupted Overpass API run")
+    args = parser.parse_args()
+    run_poi_scraping(resume=args.resume)
