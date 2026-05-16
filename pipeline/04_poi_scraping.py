@@ -14,14 +14,7 @@ Two modes (choose based on your environment):
     1. Set USE_LOCAL_PBF = False below
     2. Run:       python pipeline/04_poi_scraping.py
        Add --resume flag to continue an interrupted run:
-       python pipeline/04_poi_scraping.py --resume
-
-FIXES vs original:
-  - Removed duplicate if __name__ == "__main__" block.
-  - Added resume parameter to run_poi_scraping() (was called with resume=True
-    but the function signature didn't accept it — caused TypeError).
-  - Improved progress logging and partial-save logic.
-  - Added is_urban_score (continuous, not binary) as a richer feature.
+       python pipeline/04_poi_scraping.py --resume   
 =============================================================================
 """
 

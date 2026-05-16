@@ -4,12 +4,6 @@ Pipeline Step 02 — Silver Cleaning & Data Quality
 =============================================================================
 Runs all parameterised DQ checks from dq_checks/quality_functions.py.
 
-FIX vs original:
-  - Discovers actual unique values from Bronze BEFORE applying allowed-values
-    checks so no valid records are silently quarantined due to a hardcoded list.
-  - Adds Volume_Liters range check (min=0) to catch negative volumes.
-  - Total_Bill_Value range check now also catches zero-value ghost entries.
-
 Produces:
   data/silver/<dataset>_clean.csv
   data/rejected/<dataset>_rejected.csv   (includes failure_reason column)

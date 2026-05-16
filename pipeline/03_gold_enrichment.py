@@ -3,23 +3,6 @@
 Pipeline Step 03 — Gold Enrichment & Feature Engineering
 =============================================================================
 
-FIXES vs original:
-  1.  outlet_size_ord now computed BEFORE one-hot encoding (was broken: column
-      was already gone when the original code tried to use it).
-  2.  Province feature added from Distributor_ID mapping.
-  3.  January-specific historical baseline added (Jan 2023 & 2024 volumes).
-  4.  price_per_liter (revenue efficiency) added.
-  5.  SKU diversity trend (year-on-year) added.
-  6.  Peer group 90th percentile benchmarking added — the core mathematical
-      mechanism for uncapping latent demand.
-  7.  Constraint classification fixed: thresholds now produce Genuinely_Low_Demand
-      outlets instead of classifying everything as Stockout_Constrained.
-  8.  constraint_multiplier added as a column so the modeling notebook can apply
-      it AFTER the XGBoost base prediction (two-stage uncapping approach).
-  9.  jan26_seasonality_index is kept as a feature AND documented as a final
-      multiplier — the notebook applies it as multiplication, not a raw feature.
-  10. One-hot encoding moved to the LAST step of build_gold().
-
 Output:
   data/gold/outlet_features.csv      — all engineered features per outlet
   data/gold/model_input_final.csv    — same (ready for modeling notebook)
