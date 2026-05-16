@@ -4,23 +4,31 @@ This repository contains the complete data engineering and modeling pipeline for
 
 ## 🚀 Execution Flow (End-to-End)
 
-To achieve the best results, follow this execution order:
+### Environment Setup
+1. Ensure all Python dependencies are installed (`pandas`, `numpy`, `xgboost`, `geopandas`, `pyogrio`, etc.).
+2. Ensure you have the local Sri Lanka OSM PBF file at `data/external/sri-lanka-latest.osm.pbf` for POI scraping.
 
 ### Phase 1: Data Engineering Pipeline
-Run these scripts sequentially from the `pipeline/` directory:
+Run these Python scripts sequentially from the project root or the `pipeline/` directory:
 
-1.  **`01_bronze_ingestion.py`**: Ingests raw CSVs from `data/bronze/` with zero transformations.
-2.  **`02_silver_cleaning.py`**: Runs 12+ rigorous DQ checks. Clean data goes to `data/silver/`, while anomalies are quarantined in `data/rejected/` with failure reasons.
-3.  **`04_poi_scraping.py`**: (Recommended) Scrapes Point-of-Interest data from OpenStreetMap (Overpass API) to enrich the feature set.
-4.  **`03_gold_enrichment.py`**: Joins cleaned datasets, engineers transaction-based features, constraint signals, and merges POI data.
+1.  **`python pipeline/01_bronze_ingestion.py`**
+    - Ingests raw CSVs from `data/bronze/` with zero transformations.
+2.  **`python pipeline/02_silver_cleaning.py`**
+    - Runs rigorous DQ checks. Discovers allowed values dynamically to prevent valid data rejection. Clean data goes to `data/silver/`, while anomalies are quarantined in `data/rejected/`.
+3.  **`python pipeline/04_poi_scraping.py`**
+    - Extracts Point-of-Interest (POI) data locally from the OSM PBF file (schools, hospitals, urban scoring) for fast processing (no API rate limits).
+4.  **`python pipeline/03_gold_enrichment.py`**
+    - Joins cleaned datasets, engineers features (January baselines, price efficiency, SKU growth), classifies constraint archetypes, and computes peer-group benchmarks. Outputs `model_input_final.csv`.
 
 ### Phase 2: Modeling & Estimation
-Open and run the Jupyter notebooks in the `modeling/` directory:
+Open and run the Jupyter notebooks in the `modeling/` directory in this exact order:
 
 1.  **`01_eda.ipynb`**: Exploratory analysis of volumes, trends, and geographic distributions.
-2.  **`02_constraint_analysis.ipynb`**: Classifies every outlet into 4 constraint archetypes (Credit-hit, Stockout, Delivery-capped, Low-demand).
-3.  **`03_potential_model.ipynb`**: Core potential estimation. Uses XGBoost with constraint-based uplift factors and peer-group 90th percentile benchmarks.
-4.  **`04_final_predictions.ipynb`**: Generates the final submission CSV for January 2026.
+2.  **`02_constraint_analysis.ipynb`**: Validates constraint classifications, visualizes volume profiles by type, analyzes peer benchmarks, and saves `outlet_features_with_constraints.csv`.
+3.  **`03_potential_model.ipynb`**: Core potential estimation implementing the **Two-Stage Uncapping Framework**:
+    - *Stage 1*: XGBoost predicts `max_monthly_volume` as a proxy lower bound.
+    - *Stage 2*: Applies `constraint_multiplier` and `jan26_seasonality_index` as post-prediction multipliers. Includes protective bounds (never predict below observed max, capped at 2x peer 90th percentile).
+4.  **`04_final_predictions.ipynb`**: Generates the final submission CSV (`outputs/SkyNet_predictions.csv`) covering all outlets with the target column `Maximum_Monthly_Liters`.
 
 ## 🛠 Project Structure
 
@@ -52,4 +60,3 @@ Used for:
 - Optimizing Overpass API query logic for OSM scraping.
 - Debugging Tobit-style regression implementations.
 
-*Note: All logic was manually reviewed, tested, and calibrated against Sri Lankan FMCG market dynamics.*
