@@ -6,7 +6,7 @@ This repository contains the complete data engineering and modeling pipeline for
 
 ### Environment Setup
 1. Ensure all Python dependencies are installed (`pandas`, `numpy`, `xgboost`, `geopandas`, `pyogrio`, etc.).
-2. Ensure you have the local Sri Lanka OSM PBF file at `data/external/sri-lanka-latest.osm.pbf` for POI scraping.
+2. Ensure you have the [local Sri Lanka OSM PBF file](https://download.geofabrik.de/asia/sri-lanka-latest.osm.pbf) rename `sri-lanka-latest.osm.pbf` at `data/external/sri-lanka-latest.osm.pbf` for POI scraping.
 
 ### Phase 1: Data Engineering Pipeline
 Run these Python scripts sequentially from the project root or the `pipeline/` directory:
